@@ -1,0 +1,63 @@
+# ========================================
+# Stage 1: Builder - Install dependencies and build
+# ========================================
+FROM node:22-alpine AS builder
+
+WORKDIR /app
+
+# Install pnpm
+RUN corepack enable && corepack prepare pnpm@latest --activate
+
+# Copy package files
+COPY package.json pnpm-lock.yaml ./
+
+# Install dependencies
+RUN pnpm install --frozen-lockfile
+
+# Copy Prisma schema first (needed for generate)
+COPY prisma ./prisma/
+
+# Generate Prisma client
+RUN npx prisma generate
+
+# Copy source code
+COPY . .
+
+# Build the application
+RUN pnpm run build
+
+# ========================================
+# Stage 2: Production - Run the app
+# ========================================
+FROM node:22-alpine AS production
+
+WORKDIR /app
+
+# Install pnpm
+RUN corepack enable && corepack prepare pnpm@latest --activate
+
+# Copy package files
+COPY package.json pnpm-lock.yaml ./
+
+# Install only production dependencies
+RUN pnpm install --frozen-lockfile --prod
+
+# Copy Prisma schema and generated client
+COPY --from=builder /app/prisma ./prisma/
+COPY --from=builder /app/node_modules/.pnpm/@prisma+client* ./node_modules/.pnpm/
+
+# Copy built application
+COPY --from=builder /app/dist ./dist
+
+# Generate Prisma client in production image
+RUN npx prisma generate
+
+# Expose the port
+EXPOSE 4201
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+  CMD wget --no-verbose --tries=1 --spider http://localhost:4201/health || exit 1
+
+# Start the application
+CMD ["node", "dist/main.js"]

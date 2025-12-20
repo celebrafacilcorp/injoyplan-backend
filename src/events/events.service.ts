@@ -1,0 +1,755 @@
+import {
+  Injectable,
+  NotFoundException,
+  ForbiddenException,
+  BadRequestException,
+} from '@nestjs/common';
+import { PrismaService } from '../prisma/prisma.service';
+import { CreateEventDto } from './dto/create-event.dto';
+import { UpdateEventDto } from './dto/update-event.dto';
+
+@Injectable()
+export class EventsService {
+  constructor(private prisma: PrismaService) { }
+
+  private sanitizeUser<T extends { password?: any }>(user: T): Omit<T, 'password'> {
+    if (!user) return user as any;
+    const { password, ...rest } = user as any;
+    return rest;
+  }
+
+  private sanitizeEvent(event: any, isFavorite = false) {
+    if (!event) return event;
+    const sanitized = event.user ? { ...event, user: this.sanitizeUser(event.user) } : { ...event };
+    return { ...sanitized, favorito: isFavorite };
+  }
+
+  async create(userId: string, isCompany: boolean, dto: CreateEventDto) {
+    if (!isCompany) {
+      throw new ForbiddenException('Solo usuarios COMPANY pueden crear eventos');
+    }
+
+    let locationId: string | undefined = undefined;
+    if (dto.department && dto.province && dto.district) {
+      const location = await this.prisma.location.create({
+        data: {
+          name: dto.locationName,
+          department: dto.department,
+          province: dto.province,
+          district: dto.district,
+          address: dto.address,
+          latitude: dto.latitude,
+          longitude: dto.longitude,
+        },
+      });
+      locationId = location.id;
+    }
+
+    const event = await this.prisma.event.create({
+      data: {
+        title: dto.title,
+        description: dto.description,
+        category: dto.category,
+        imageUrl: dto.imageUrl,
+        bannerUrl: dto.bannerUrl,
+        websiteUrl: dto.websiteUrl,
+        ticketUrls: dto.ticketUrls || undefined,
+        isFeatured: dto.isFeatured ?? false,
+        userId,
+        locationId,
+        dates: {
+          create: dto.dates.map((d) => ({
+            date: new Date(d.date),
+            startTime: d.startTime,
+            endTime: d.endTime,
+            price: d.price,
+            capacity: d.capacity,
+          })),
+        },
+      },
+      include: {
+        dates: true,
+        location: true,
+        user: { include: { profile: true } },
+      },
+    });
+
+    return this.sanitizeEvent(event);
+  }
+
+  async findAll(page = 1, limit = 20, status = 'active', isFeatured?: boolean) {
+    const skip = (page - 1) * limit;
+
+    const whereClause: any = {};
+
+    // Status Filter
+    if (status === 'active') {
+      whereClause.isActive = true;
+    } else if (status === 'inactive') {
+      whereClause.isActive = false;
+    }
+    // if status === 'all', we don't filter by isActive
+
+    // Featured Filter
+    if (isFeatured !== undefined) {
+      whereClause.isFeatured = isFeatured;
+    }
+
+    const [data, total] = await Promise.all([
+      this.prisma.event.findMany({
+        where: whereClause,
+        select: {
+          id: true,
+          title: true,
+          description: true,
+          category: true,
+          imageUrl: true,
+          isFeatured: true,
+          isActive: true,
+          createdAt: true,
+          websiteUrl: true,
+          ticketUrls: true,
+          dates: {
+            select: { id: true, date: true, startTime: true, endTime: true, price: true }
+          },
+          location: {
+            select: { name: true, address: true, department: true, district: true, province: true, latitude: true, longitude: true }
+          }
+        },
+        skip,
+        take: limit,
+        orderBy: { createdAt: 'desc' },
+      }),
+      this.prisma.event.count({ where: whereClause }),
+    ]);
+
+    return {
+      data: data.map((e) => this.sanitizeEvent(e)),
+      total,
+      page,
+      totalPages: Math.ceil(total / limit),
+    };
+  }
+
+  async findByUser(userId: string, page = 1, limit = 20) {
+    const skip = (page - 1) * limit;
+    const [data, total] = await Promise.all([
+      this.prisma.event.findMany({
+        where: { userId, isActive: true },
+        include: {
+          dates: true,
+          location: true,
+          _count: { select: { favorites: true, comments: true } },
+        },
+        skip,
+        take: limit,
+        orderBy: { createdAt: 'desc' },
+      }),
+      this.prisma.event.count({ where: { userId, isActive: true } }),
+    ]);
+
+    const eventIds = data.map((e) => e.id);
+    let favoritesSet = new Set<string>();
+
+    if (userId) {
+      const favorites = await this.prisma.favorite.findMany({
+        where: {
+          userId,
+          eventId: { in: eventIds },
+        },
+      });
+      favoritesSet = new Set(favorites.map((f) => f.eventId));
+    }
+
+    return {
+      data: data.map((e) => this.sanitizeEvent(e, favoritesSet.has(e.id))),
+      total,
+      page,
+      totalPages: Math.ceil(total / limit),
+    };
+  }
+
+  async findFeatured() {
+    const data = await this.prisma.event.findMany({
+      where: { isActive: true, isFeatured: true },
+      include: { dates: true, location: true },
+      orderBy: { createdAt: 'desc' },
+    });
+    return { data, total: data.length, page: 1, totalPages: 1 };
+  }
+
+  async findOne(id: string) {
+    const event = await this.prisma.event.findUnique({
+      where: { id },
+      include: {
+        dates: true,
+        location: true,
+        user: { include: { profile: true } },
+        _count: { select: { favorites: true, comments: true } },
+      },
+    });
+    if (!event) throw new NotFoundException('Evento no encontrado');
+    return this.sanitizeEvent(event);
+  }
+
+  async getDates(id: string) {
+    return this.prisma.eventDate.findMany({ where: { eventId: id }, orderBy: { date: 'asc' } });
+  }
+
+  async search(query: string, page = 1, limit = 20) {
+    const skip = (page - 1) * limit;
+    const [data, total] = await Promise.all([
+      this.prisma.event.findMany({
+        where: {
+          isActive: true,
+          OR: [
+            { title: { contains: query, mode: 'insensitive' } },
+            { description: { contains: query, mode: 'insensitive' } },
+            { category: { contains: query, mode: 'insensitive' } },
+          ],
+        },
+        include: { dates: true, location: true },
+        skip,
+        take: limit,
+        orderBy: { createdAt: 'desc' },
+      }),
+      this.prisma.event.count({
+        where: {
+          isActive: true,
+          OR: [
+            { title: { contains: query, mode: 'insensitive' } },
+            { description: { contains: query, mode: 'insensitive' } },
+            { category: { contains: query, mode: 'insensitive' } },
+          ],
+        },
+      }),
+    ]);
+    return { data, total, page, totalPages: Math.ceil(total / limit) };
+  }
+
+  async byCategory(category: string, page = 1, limit = 20) {
+    const skip = (page - 1) * limit;
+    const [data, total] = await Promise.all([
+      this.prisma.event.findMany({
+        where: { isActive: true, category },
+        include: { dates: true, location: true },
+        skip,
+        take: limit,
+        orderBy: { createdAt: 'desc' },
+      }),
+      this.prisma.event.count({ where: { isActive: true, category } }),
+    ]);
+    return { data, total, page, totalPages: Math.ceil(total / limit) };
+  }
+
+  async feed(userId: string, page = 1, limit = 20) {
+    const skip = (page - 1) * limit;
+
+    const following = await this.prisma.follow.findMany({
+      where: { followerId: userId },
+      select: { followingId: true },
+    });
+    const followingIds = following.map((f) => f.followingId);
+
+    // Logica Smart Feed:
+    // Si sigue a usuarios -> Mostrar eventos propios + seguidos + destacados
+    // Si NO sigue a nadie -> Mostrar "Discovery Mode": Todos los eventos activos (priorizando destacados y recientes)
+
+    // NOTA: Si se desea mezclar siempre, podríamos quitar el `if`.
+    // Por ahora, asumimos que si sigues, quieres ver eso. Si no, quieres descubrir.
+
+    let where: any = { isActive: true };
+
+    if (followingIds.length > 0) {
+      where.OR = [
+        { userId },
+        { userId: { in: followingIds } },
+        { isFeatured: true }, // Siempre incluir destacados para enriquecer
+      ];
+    } else {
+      // Discovery Mode: Mostrar todo lo activo (el ordenamiento por fecha hará el resto)
+      // Opcional: Podríamos filtrar solo UserType=COMPANY si tuvieramos acceso fácil, pero el modelo Event no tiene userType directo.
+      // Dado que solo Company crea eventos, esto es seguro.
+      where = { isActive: true };
+    }
+
+    const [data, total] = await Promise.all([
+      this.prisma.event.findMany({
+        where,
+        include: {
+          dates: true,
+          location: true,
+          user: { include: { profile: true } },
+          _count: { select: { favorites: true, comments: true } },
+        },
+        skip,
+        take: limit,
+        orderBy: [
+          { isFeatured: 'desc' }, // Destacados primero (opcional, o mezclar)
+          { createdAt: 'desc' }
+        ],
+      }),
+      this.prisma.event.count({ where }),
+    ]);
+
+    const eventIds = data.map((e) => e.id);
+    let favoritesSet = new Set<string>();
+
+    if (userId) {
+      const favorites = await this.prisma.favorite.findMany({
+        where: {
+          userId,
+          eventId: { in: eventIds },
+        },
+      });
+      favoritesSet = new Set(favorites.map((f) => f.eventId));
+    }
+
+    return {
+      data: data.map((e) => this.sanitizeEvent(e, favoritesSet.has(e.id))),
+      total,
+      page,
+      totalPages: Math.ceil(total / limit),
+    };
+  }
+
+  async getComments(eventId: string, page = 1, limit = 20) {
+    const skip = (page - 1) * limit;
+    const [data, total] = await Promise.all([
+      this.prisma.eventComment.findMany({
+        where: { eventId, parentId: null }, // Only top-level comments
+        include: {
+          user: { include: { profile: true } },
+          replies: {
+            include: {
+              user: { include: { profile: true } },
+              likes: true, // simplified for checking if liked
+              _count: { select: { likes: true } }
+            },
+            orderBy: { createdAt: 'asc' }
+          },
+          likes: true,
+          _count: { select: { likes: true, replies: true } }
+        },
+        skip,
+        take: limit,
+        orderBy: { createdAt: 'desc' },
+      }),
+      this.prisma.eventComment.count({ where: { eventId, parentId: null } }),
+    ]);
+
+    // Helper to format comment
+    const formatComment = (c: any) => ({
+      ...c,
+      user: this.sanitizeUser(c.user),
+      replies: c.replies?.map((r: any) => ({
+        ...r,
+        user: this.sanitizeUser(r.user),
+        isLiked: false, // Default, updated in controller if userId passed? OR sanitize passing userId down?
+        // Ideally we start passing userId to getComments to check isLiked
+      })) || [],
+      isLiked: false
+    });
+
+    return {
+      data: data.map(formatComment),
+      total,
+      page,
+      totalPages: Math.ceil(total / limit),
+    };
+
+  }
+
+  async addComment(userId: string, eventId: string, content?: string, parentId?: string) {
+    if (!content) throw new BadRequestException('El contenido del comentario es requerido');
+
+    const comment = await this.prisma.eventComment.create({
+      data: {
+        userId,
+        eventId,
+        content,
+        parentId, // Optional parentId for replies
+      },
+      include: {
+        user: { include: { profile: true } },
+      },
+    });
+
+    return { ...comment, user: this.sanitizeUser(comment.user), replies: [], _count: { likes: 0, replies: 0 } };
+  }
+
+  async deleteComment(userId: string, commentId: string) {
+    const comment = await this.prisma.eventComment.findUnique({ where: { id: commentId } });
+    if (!comment) throw new NotFoundException('Comentario no encontrado');
+    if (comment.userId !== userId) throw new ForbiddenException('No autorizado para eliminar este comentario');
+
+    await this.prisma.eventComment.delete({ where: { id: commentId } });
+    return { message: 'Comentario eliminado' };
+  }
+
+  async editComment(userId: string, commentId: string, content: string) {
+    const comment = await this.prisma.eventComment.findUnique({ where: { id: commentId } });
+    if (!comment) throw new NotFoundException('Comentario no encontrado');
+    if (comment.userId !== userId) throw new ForbiddenException('No autorizado para editar este comentario');
+
+    const updated = await this.prisma.eventComment.update({
+      where: { id: commentId },
+      data: { content },
+      include: { user: { include: { profile: true } } }
+    });
+    return { ...updated, user: this.sanitizeUser(updated.user) };
+  }
+
+  async toggleCommentLike(userId: string, commentId: string) {
+    const existing = await this.prisma.eventCommentLike.findUnique({
+      where: { userId_commentId: { userId, commentId } }
+    });
+
+    if (existing) {
+      await this.prisma.eventCommentLike.delete({
+        where: { userId_commentId: { userId, commentId } }
+      });
+      return { isLiked: false };
+    } else {
+      await this.prisma.eventCommentLike.create({
+        data: { userId, commentId }
+      });
+      return { isLiked: true };
+    }
+  }
+
+  async myEvents(userId: string) {
+    return this.prisma.event.findMany({
+      where: { userId },
+      include: { dates: true, location: true },
+      orderBy: { createdAt: 'desc' },
+    });
+  }
+
+  async update(userId: string, id: string, dto: UpdateEventDto) {
+    const event = await this.prisma.event.findUnique({ where: { id } });
+    if (!event) throw new NotFoundException('Evento no encontrado');
+    if (event.userId !== userId) throw new ForbiddenException('No autorizado');
+
+    // Handle Location
+    let locationId = event.locationId;
+    const hasLocationFields = dto.department || dto.province || dto.district || dto.locationName || dto.address;
+
+    if (hasLocationFields) {
+      if (locationId) {
+        await this.prisma.location.update({
+          where: { id: locationId },
+          data: {
+            name: dto.locationName,
+            department: dto.department,
+            province: dto.province,
+            district: dto.district,
+            address: dto.address,
+            latitude: dto.latitude,
+            longitude: dto.longitude,
+          },
+        });
+      } else {
+        const newLoc = await this.prisma.location.create({
+          data: {
+            name: dto.locationName,
+            department: dto.department ?? 'Lima',
+            province: dto.province ?? 'Lima',
+            district: dto.district ?? '',
+            address: dto.address,
+            latitude: dto.latitude,
+            longitude: dto.longitude,
+          },
+        });
+        locationId = newLoc.id;
+      }
+    }
+
+    // Handle Dates (Delete & Re-create if provided)
+    if (dto.dates && dto.dates.length > 0) {
+      await this.prisma.eventDate.deleteMany({ where: { eventId: id } });
+      await this.prisma.eventDate.createMany({
+        data: dto.dates.map((d) => ({
+          eventId: id,
+          date: new Date(d.date),
+          startTime: d.startTime,
+          endTime: d.endTime,
+          price: d.price,
+          capacity: d.capacity,
+        })),
+      });
+    }
+
+    return this.prisma.event.update({
+      where: { id },
+      data: {
+        title: dto.title,
+        description: dto.description,
+        category: dto.category,
+        imageUrl: dto.imageUrl,
+        bannerUrl: dto.bannerUrl,
+        websiteUrl: dto.websiteUrl,
+        ticketUrls: dto.ticketUrls !== undefined ? dto.ticketUrls : undefined,
+        isFeatured: dto.isFeatured,
+        locationId,
+      },
+      include: { dates: true, location: true },
+    });
+  }
+
+  async toggleStatus(userId: string, id: string) {
+    const event = await this.prisma.event.findUnique({ where: { id } });
+    if (!event) throw new NotFoundException('Evento no encontrado');
+    if (event.userId !== userId) throw new ForbiddenException('No autorizado');
+
+    return this.prisma.event.update({
+      where: { id },
+      data: { isActive: !event.isActive },
+    });
+  }
+
+  async remove(userId: string, id: string) {
+    const event = await this.prisma.event.findUnique({ where: { id } });
+    if (!event) throw new NotFoundException('Evento no encontrado');
+    if (event.userId !== userId) throw new ForbiddenException('No autorizado');
+
+    await this.prisma.event.delete({ where: { id } });
+    return { message: 'Evento eliminado' };
+  }
+
+  async relatedByEvent(eventId: string, excludeFeatured = false) {
+    const event = await this.prisma.event.findUnique({
+      where: { id: eventId },
+      select: { category: true },
+    });
+    if (!event) throw new NotFoundException('Evento no encontrado');
+
+    return this.prisma.event.findMany({
+      where: {
+        isActive: true,
+        category: event.category,
+        id: { not: eventId },
+        ...(excludeFeatured ? { isFeatured: false } : {}),
+      },
+      take: 10,
+      orderBy: { createdAt: 'desc' },
+      include: { dates: true, location: true },
+    });
+  }
+
+  async relatedByCategory(category: string, excludeFeatured = false) {
+    const where: any = { isActive: true, category };
+    if (excludeFeatured) where.isFeatured = false;
+    return this.prisma.event.findMany({
+      where,
+      take: 10,
+      orderBy: { createdAt: 'desc' },
+      include: { dates: true },
+    });
+  }
+
+  async statsByCategory() {
+    // Get all categories from database
+    const categories = await this.prisma.category.findMany({
+      where: { isActive: true },
+      orderBy: { order: 'asc' },
+    });
+
+    // Count events per category
+    const eventCounts = await this.prisma.event.groupBy({
+      by: ['category'],
+      _count: { id: true },
+      where: { isActive: true },
+    });
+
+    // Create a map of category counts
+    const countsMap = eventCounts.reduce((acc, item) => {
+      acc[item.category] = item._count.id;
+      return acc;
+    }, {} as Record<string, number>);
+
+    // Return formatted response with category data
+    return categories.map(cat => ({
+      idCategorias: cat.id,
+      nombreCategoria: cat.name,
+      iconos: cat.icon,
+      cantidad: countsMap[cat.name] || 0,
+      estado: cat.isActive ? 1 : 0,
+    }));
+  }
+
+  async getEventDetailByDate(eventId: string, dateId: string) {
+    const event = await this.prisma.event.findUnique({
+      where: { id: eventId },
+      include: {
+        user: { include: { profile: true } },
+        location: true,
+        dates: { where: { id: dateId } },
+        _count: { select: { favorites: true, comments: true } },
+      },
+    });
+    if (!event) throw new NotFoundException('Evento no encontrado');
+    if (event.dates.length === 0) throw new NotFoundException('Fecha no encontrada');
+    return this.sanitizeEvent(event);
+  }
+
+  async searchPublicEvents(filters: {
+    categoria?: string;
+    departamento?: string;
+    provincia?: string;
+    distrito?: string;
+    fechaInicio?: string;
+    fechaFin?: string;
+    busqueda?: string;
+    esGratis?: boolean;
+    enCurso?: boolean;
+    horaInicio?: string;
+    horaFin?: string;
+    page?: number;
+    limit?: number;
+  }) {
+    const { categoria, departamento, provincia, distrito, fechaInicio, fechaFin, busqueda, esGratis, enCurso, horaInicio, horaFin, page = 1, limit = 20 } = filters;
+    const skip = (page - 1) * limit;
+
+    const where: any = { isActive: true };
+
+    if (categoria) {
+      where.category = { equals: categoria, mode: 'insensitive' };
+    }
+    if (busqueda) {
+      where.OR = [
+        { title: { contains: busqueda, mode: 'insensitive' } },
+        { description: { contains: busqueda, mode: 'insensitive' } },
+      ];
+    }
+    if (departamento || provincia || distrito) {
+      where.location = {};
+      if (departamento) where.location.department = { equals: departamento, mode: 'insensitive' };
+      if (provincia) where.location.province = { equals: provincia, mode: 'insensitive' };
+      if (distrito) where.location.district = { equals: distrito, mode: 'insensitive' };
+    }
+
+    const datesWhere: any = {};
+    const ignoreYear = !!(fechaInicio || fechaFin);
+
+    // If ignoring year, we don't filter dates in DB query (unless EnCurso logic applies specifically)
+    // We only apply DB date filter if NOT ignoring year, OR if using specific logic not related to date matching
+
+    if (!ignoreYear) {
+      // Standard date range logic if needed, or if enCurso implies future dates
+      if (fechaInicio) datesWhere.date = { ...datesWhere.date, gte: new Date(fechaInicio) };
+      if (fechaFin) datesWhere.date = { ...datesWhere.date, lte: new Date(fechaFin) };
+    }
+
+    // Combine logic for datesWhere. Using AND array allows safe combination of OR conditions (like esGratis) and Time logic
+    datesWhere.AND = [];
+
+    if (String(esGratis) === 'true') {
+      datesWhere.AND.push({
+        OR: [
+          { price: 0 },
+          { price: null }
+        ]
+      });
+    }
+
+    if (horaInicio && horaFin) {
+      if (horaInicio > horaFin) {
+        // Crossover midnight logic: Start > End (e.g. 18:00 to 06:00)
+        // Time must be >= 18:00 OR <= 06:00
+        datesWhere.AND.push({
+          OR: [
+            { startTime: { gte: horaInicio } },
+            { startTime: { lte: horaFin } }
+          ]
+        });
+      } else {
+        // Standard range
+        datesWhere.AND.push({
+          startTime: { gte: horaInicio, lte: horaFin }
+        });
+      }
+    } else {
+      if (horaInicio) datesWhere.AND.push({ startTime: { gte: horaInicio } });
+      if (horaFin) datesWhere.AND.push({ startTime: { lte: horaFin } });
+    }
+
+    if (String(enCurso) === 'true') {
+      // "En Curso" usually means from today onwards. 
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      datesWhere.date = { ...datesWhere.date, gte: today };
+    }
+
+    // Since we use datesWhere.AND, we need to ensure datesWhere itself is valid structure.
+    // However, datesWhere also has 'date' property directly assigned above?
+    // Wait, datesWhere structure for Prisma: { AND: [...], date: ... } works fine.
+    // Just need to ensure if AND is empty we don't break things?
+    // Empty AND [] is fine usually or we can check length.
+
+    if (Object.keys(datesWhere).length > 0) { // AND is a key 
+      where.dates = { some: datesWhere };
+    }
+
+    // Fetch ALL candidates that match filtered criteria (except strict date range if ignoring year)
+    // We fetch a bit more or all? Fetching all might be heavy if db grows, but for now safe.
+    // Actually, we must fetch all matching category/text to filter manually by date.
+
+    // Determine pagination strategy:
+    // If ignoreYear is true, we unfortunately must fetch ALL matching events (isActive, category, etc) 
+    // and then filter in memory, then paginate.
+
+    const allMatchingEvents = await this.prisma.event.findMany({
+      where,
+      include: { dates: true, location: true, user: { include: { profile: true } } },
+      orderBy: { createdAt: 'desc' },
+      // If NOT ignoring year and just doing standard filters, we could use skip/take here.
+      // But to be consistent with the hack, we fetch all if ignoring year.
+      // If not ignoring year, we SHOULD use skip/take in query for performance, but mixing strategies is complex.
+      // Let's assume we fetch all for correct filtering of 'dates' array inside event too?
+      // No, event has many dates. We check if event has ANY date matches.
+    });
+
+    let filteredEvents = allMatchingEvents;
+
+    if (ignoreYear) {
+      const startD = fechaInicio ? new Date(fechaInicio) : null;
+      const endD = fechaFin ? new Date(fechaFin) : null;
+
+      filteredEvents = allMatchingEvents.filter(event => {
+        return event.dates.some(d => {
+          const eventDate = new Date(d.date); // 2023-11-06
+
+          // Compare Day/Month with Start
+          let matchStart = true;
+          if (startD) {
+            // Check if event Month/Day >= start Month/Day
+            const eventMMDD = (eventDate.getMonth() * 100) + eventDate.getDate();
+            const startMMDD = (startD.getMonth() * 100) + startD.getDate();
+            matchStart = eventMMDD >= startMMDD;
+          }
+
+          // Compare Day/Month with End
+          let matchEnd = true;
+          if (endD) {
+            const eventMMDD = (eventDate.getMonth() * 100) + eventDate.getDate();
+            const endMMDD = (endD.getMonth() * 100) + endD.getDate();
+            matchEnd = eventMMDD <= endMMDD;
+          }
+
+          return matchStart && matchEnd;
+        });
+      });
+    }
+
+    const total = filteredEvents.length;
+    const paginatedEvents = filteredEvents.slice(skip, skip + limit);
+
+    return {
+      eventos: paginatedEvents.map((e) => this.sanitizeEvent(e)),
+      total,
+      page,
+      totalPages: Math.ceil(total / limit),
+    };
+  }
+}
