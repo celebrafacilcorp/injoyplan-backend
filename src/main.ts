@@ -16,6 +16,9 @@ async function bootstrap() {
     'https://www.injoyplan.com',
     'https://injoyplan.com',
     'https://master.d2asj3nln890d2.amplifyapp.com',
+    // Railway domains
+    'https://injoyplan-frontend-production.up.railway.app',
+    'https://injoyplan-backend-production.up.railway.app',
   ];
 
   app.enableCors({
@@ -62,7 +65,7 @@ async function bootstrap() {
   SwaggerModule.setup('api-docs', app, document);
 
   const port = process.env.PORT || 4201;
-  await app.listen(port);
+  await app.listen(port, '0.0.0.0');
   console.log(`🚀 Application is running on: http://localhost:${port}`);
   console.log(`📚 Swagger documentation: http://localhost:${port}/api-docs`);
 }
