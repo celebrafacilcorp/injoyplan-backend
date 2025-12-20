@@ -17,8 +17,8 @@ RUN pnpm install --frozen-lockfile
 # Copy Prisma schema first (needed for generate)
 COPY prisma ./prisma/
 
-# Generate Prisma client
-RUN npx prisma generate
+# Generate Prisma client using the installed (pinned) version
+RUN pnpm exec prisma generate
 
 # Copy source code
 COPY . .
@@ -42,6 +42,9 @@ COPY package.json pnpm-lock.yaml ./
 # Install only production dependencies
 RUN pnpm install --frozen-lockfile --prod
 
+# Install Prisma CLI explicitly for migrations and generation (matching version)
+RUN pnpm add -D prisma@5.22.0
+
 # Copy Prisma schema and generated client
 COPY --from=builder /app/prisma ./prisma/
 COPY --from=builder /app/node_modules/.pnpm/@prisma+client* ./node_modules/.pnpm/
@@ -50,7 +53,7 @@ COPY --from=builder /app/node_modules/.pnpm/@prisma+client* ./node_modules/.pnpm
 COPY --from=builder /app/dist ./dist
 
 # Generate Prisma client in production image
-RUN npx prisma generate
+RUN pnpm exec prisma generate
 
 # Expose the port
 EXPOSE 4201
