@@ -45,9 +45,8 @@ RUN pnpm install --frozen-lockfile --prod
 # Install Prisma CLI explicitly for migrations and generation (matching version)
 RUN pnpm add -D prisma@5.22.0
 
-# Copy Prisma schema and generated client
+# Copy Prisma schema from builder
 COPY --from=builder /app/prisma ./prisma/
-COPY --from=builder /app/node_modules/.pnpm/@prisma+client* ./node_modules/.pnpm/
 
 # Copy built application
 COPY --from=builder /app/dist ./dist
