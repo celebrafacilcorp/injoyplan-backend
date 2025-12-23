@@ -204,8 +204,7 @@ export class EventsService {
           isActive: true,
           OR: [
             { title: { contains: query, mode: 'insensitive' } },
-            { description: { contains: query, mode: 'insensitive' } },
-            { category: { contains: query, mode: 'insensitive' } },
+            { location: { name: { contains: query, mode: 'insensitive' } } },
           ],
         },
         include: { dates: true, location: true },
@@ -218,8 +217,7 @@ export class EventsService {
           isActive: true,
           OR: [
             { title: { contains: query, mode: 'insensitive' } },
-            { description: { contains: query, mode: 'insensitive' } },
-            { category: { contains: query, mode: 'insensitive' } },
+            { location: { name: { contains: query, mode: 'insensitive' } } },
           ],
         },
       }),
@@ -578,19 +576,29 @@ export class EventsService {
     }));
   }
 
-  async getEventDetailByDate(eventId: string, dateId: string) {
+  async getEventDetailByDate(eventId: string, dateId: string, userId?: string) {
     const event = await this.prisma.event.findUnique({
       where: { id: eventId },
       include: {
         user: { include: { profile: true } },
         location: true,
-        dates: { where: { id: dateId } },
+        dates: { orderBy: { date: 'asc' } },
         _count: { select: { favorites: true, comments: true } },
+        ...(userId ? { favorites: { where: { userId } } } : {}),
       },
     });
     if (!event) throw new NotFoundException('Evento no encontrado');
     if (event.dates.length === 0) throw new NotFoundException('Fecha no encontrada');
-    return this.sanitizeEvent(event);
+
+    const result = this.sanitizeEvent(event);
+
+    if (userId && (event as any).favorites?.length > 0) {
+      result.favorito = (event as any).favorites[0].id;
+    } else {
+      result.favorito = false;
+    }
+
+    return result;
   }
 
   async searchPublicEvents(filters: {
@@ -607,8 +615,9 @@ export class EventsService {
     horaFin?: string;
     page?: number;
     limit?: number;
+    userId?: string;
   }) {
-    const { categoria, departamento, provincia, distrito, fechaInicio, fechaFin, busqueda, esGratis, enCurso, horaInicio, horaFin, page = 1, limit = 20 } = filters;
+    const { categoria, departamento, provincia, distrito, fechaInicio, fechaFin, busqueda, esGratis, enCurso, horaInicio, horaFin, page = 1, limit = 20, userId } = filters;
     const skip = (page - 1) * limit;
 
     const where: any = { isActive: true };
@@ -619,7 +628,7 @@ export class EventsService {
     if (busqueda) {
       where.OR = [
         { title: { contains: busqueda, mode: 'insensitive' } },
-        { description: { contains: busqueda, mode: 'insensitive' } },
+        { location: { name: { contains: busqueda, mode: 'insensitive' } } },
       ];
     }
     if (departamento || provincia || distrito) {
@@ -701,7 +710,12 @@ export class EventsService {
 
     const allMatchingEvents = await this.prisma.event.findMany({
       where,
-      include: { dates: true, location: true, user: { include: { profile: true } } },
+      include: {
+        dates: true,
+        location: true,
+        user: { include: { profile: true } },
+        ...(userId ? { favorites: { where: { userId } } } : {})
+      },
       orderBy: { createdAt: 'desc' },
       // If NOT ignoring year and just doing standard filters, we could use skip/take here.
       // But to be consistent with the hack, we fetch all if ignoring year.
@@ -742,11 +756,54 @@ export class EventsService {
       });
     }
 
+    // Filter out past events: Keep event only if it has at least one future or current date
+    const now = new Date();
+    now.setHours(0, 0, 0, 0); // Start of today
+
+    filteredEvents = filteredEvents.filter(event => {
+      if (!event.dates || event.dates.length === 0) return false;
+
+      return event.dates.some(d => {
+        const eventDate = new Date(d.date);
+        // Compare dates (ignoring time for "today" logic, or inclusive of today)
+        // If event date is strictly less than today (yesterday or before), it's past.
+        // We want >= today.
+        const eDate = new Date(eventDate);
+        eDate.setHours(0, 0, 0, 0);
+        return eDate.getTime() >= now.getTime();
+      });
+    });
+
+    // Sort chronologically by the earliest date
+    filteredEvents.sort((a, b) => {
+      const getEarliestDate = (e: any) => {
+        if (!e.dates || e.dates.length === 0) return new Date(8640000000000000); // Far future
+        // Find the earliest date of the event
+        return e.dates.reduce((min: Date, d: any) => {
+          const date = new Date(d.date);
+          return date < min ? date : min;
+        }, new Date(8640000000000000));
+      };
+
+      const dateA = getEarliestDate(a);
+      const dateB = getEarliestDate(b);
+
+      return dateA.getTime() - dateB.getTime();
+    });
+
     const total = filteredEvents.length;
     const paginatedEvents = filteredEvents.slice(skip, skip + limit);
 
     return {
-      eventos: paginatedEvents.map((e) => this.sanitizeEvent(e)),
+      eventos: paginatedEvents.map((e) => {
+        const sanitized = this.sanitizeEvent(e);
+        if (userId && (e as any).favorites?.length > 0) {
+          sanitized.favorito = (e as any).favorites[0].id;
+        } else {
+          sanitized.favorito = false;
+        }
+        return sanitized;
+      }),
       total,
       page,
       totalPages: Math.ceil(total / limit),

@@ -2,7 +2,8 @@ import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Resend } from 'resend';
 import { render } from '@react-email/render';
-import VerificationEmail from './emails/VerificationEmail'; // Ensure path is correct
+import VerificationEmail from './emails/VerificationEmail';
+import ContactEmail from './emails/ContactEmail';
 
 @Injectable()
 export class EmailService {
@@ -15,9 +16,10 @@ export class EmailService {
     async sendVerificationEmail(email: string, token: string) {
         try {
             const emailHtml = await render(VerificationEmail({ code: token }));
+            const fromEmail = this.configService.get('RESEND_FROM_EMAIL') || 'onboarding@resend.dev';
 
             await this.resend.emails.send({
-                from: 'Injoyplan <onboarding@resend.dev>', // Or verified domain
+                from: `Injoyplan <${fromEmail}>`,
                 to: email,
                 subject: `Código de verificación: ${token} - Injoyplan`,
                 html: emailHtml,
@@ -30,13 +32,12 @@ export class EmailService {
     }
 
     async sendPasswordResetEmail(email: string, token: string) {
-        // For now keep simple or migrate later
-        // Just simple HTML for reset password for now to avoid complexity, or reuse template structure
         const frontendUrl = this.configService.get('FRONTEND_URL');
         const resetLink = `${frontendUrl}/reset-password?token=${token}`;
+        const fromEmail = this.configService.get('RESEND_FROM_EMAIL') || 'onboarding@resend.dev';
 
         await this.resend.emails.send({
-            from: 'Injoyplan <onboarding@resend.dev>',
+            from: `Injoyplan <${fromEmail}>`,
             to: email,
             subject: 'Recuperación de contraseña - Injoyplan',
             html: `
@@ -45,5 +46,32 @@ export class EmailService {
         <a href="${resetLink}">Restablecer contraseña</a>
       `,
         });
+    }
+
+    async sendContactEmail(data: { nombre: string; correo: string; telefono: string; motivo: string; descripcion: string }) {
+        try {
+            const emailHtml = await render(ContactEmail({
+                nombre: data.nombre,
+                correo: data.correo,
+                telefono: data.telefono,
+                motivo: data.motivo,
+                descripcion: data.descripcion,
+            }));
+
+            const toEmail = process.env.CONTACT_EMAIL || 'delivered@resend.dev';
+            const fromEmail = this.configService.get('RESEND_FROM_EMAIL') || 'onboarding@resend.dev';
+
+            await this.resend.emails.send({
+                from: `Injoyplan Contacto <${fromEmail}>`,
+                to: toEmail,
+                subject: `Nuevo mensaje: ${data.motivo} - ${data.nombre}`,
+                html: emailHtml,
+                replyTo: data.correo
+            });
+            console.log(`Contact email sent to ${toEmail}`);
+        } catch (error) {
+            console.error('Error sending contact email:', error);
+            throw error;
+        }
     }
 }

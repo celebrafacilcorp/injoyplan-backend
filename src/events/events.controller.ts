@@ -244,16 +244,21 @@ export class EventsController {
 
   @Public()
   @Get('detail/:eventId/:dateId')
+  @UseGuards(OptionalJwtAuthGuard)
+  @ApiBearerAuth('JWT-auth')
   @ApiOperation({ summary: 'Detalle de evento con fecha específica' })
   getEventDetailByDate(
     @Param('eventId') eventId: string,
     @Param('dateId') dateId: string,
+    @GetUser('id') userId?: string,
   ) {
-    return this.eventsService.getEventDetailByDate(eventId, dateId);
+    return this.eventsService.getEventDetailByDate(eventId, dateId, userId);
   }
 
   @Public()
   @Get('public/search')
+  @UseGuards(OptionalJwtAuthGuard)
+  @ApiBearerAuth('JWT-auth')
   @ApiOperation({ summary: 'Búsqueda avanzada pública de eventos' })
   searchPublicEvents(
     @Query('categoria') categoria?: string,
@@ -269,6 +274,7 @@ export class EventsController {
     @Query('horaFin') horaFin?: string,
     @Query('page', new ParseIntPipe({ optional: true })) page?: number,
     @Query('limit', new ParseIntPipe({ optional: true })) limit?: number,
+    @GetUser('id') userId?: string,
   ) {
     return this.eventsService.searchPublicEvents({
       categoria,
@@ -284,6 +290,7 @@ export class EventsController {
       horaFin,
       page,
       limit,
+      userId,
     });
   }
 }

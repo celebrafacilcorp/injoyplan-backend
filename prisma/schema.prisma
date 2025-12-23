@@ -272,10 +272,40 @@ model Message {
 
 model Complaint {
   id        String   @id @default(uuid())
-  name      String
-  email     String
-  subject   String
-  message   String   @db.Text
+  
+  // Consumer Data
+  consumerName       String
+  consumerDocType    String
+  consumerDocNumber  String
+  consumerAddress    String
+  consumerDepartment String
+  consumerProvince   String
+  consumerDistrict   String
+  consumerPhone      String
+  consumerEmail      String
+
+  // Minor / Representative Data
+  isMinor            Boolean @default(false)
+  repName            String?
+  repDocType         String?
+  repDocNumber       String?
+  repAddress         String?
+  repDepartment      String?
+  repProvince        String?
+  repDistrict        String?
+  repPhone           String?
+  repEmail           String?
+
+  // Contracted Good Data
+  goodType           String // PRODUCTO, SERVICIO
+  claimAmount        Decimal? @db.Decimal(10, 2)
+  goodDescription    String @db.Text
+
+  // Claim Detail
+  claimType          String // RECLAMO, QUEJA
+  claimDetail        String @db.Text
+  orderRequest       String @db.Text // Detalle del pedido
+
   createdAt DateTime @default(now())
 
   @@map("complaints")

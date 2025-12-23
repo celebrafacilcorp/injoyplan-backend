@@ -16,6 +16,7 @@ import { ComplaintsModule } from './complaints/complaints.module';
 import { BannersModule } from './banners/banners.module';
 import { NewsletterModule } from './newsletter/newsletter.module';
 import { AdminModule } from './admin/admin.module';
+import { ContactModule } from './contact/contact.module';
 
 @Module({
   imports: [
@@ -41,6 +42,7 @@ import { AdminModule } from './admin/admin.module';
     BannersModule,
     NewsletterModule,
     AdminModule,
+    ContactModule,
   ],
   controllers: [AppController],
   providers: [AppService],
