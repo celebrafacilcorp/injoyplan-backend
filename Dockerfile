@@ -61,8 +61,5 @@ EXPOSE 4201
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
   CMD wget --no-verbose --tries=1 --spider http://localhost:4201/health || exit 1
 
-# Copy startup script
-COPY start.sh ./
-
-# Start the application using the script
-CMD ["sh", "start.sh"]
+# Start the application directly
+CMD ["node", "dist/src/main.js"]
