@@ -48,6 +48,9 @@ RUN pnpm install --frozen-lockfile --prod
 # Install Prisma CLI explicitly for migrations
 RUN pnpm add -D prisma@5.22.0
 
+# Generate Prisma Client for production (critical!)
+RUN pnpm exec prisma generate
+
 # Copy built application
 COPY --from=builder /app/dist ./dist
 

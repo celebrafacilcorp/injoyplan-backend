@@ -1,18 +1,15 @@
 #!/bin/sh
-set -e
+set -ex  # Exit on error and print all commands
 
+echo "========================================="
 echo "🔄 Running database migrations..."
+echo "========================================="
 pnpm exec prisma migrate deploy
 
+echo "========================================="
 echo "✅ Migrations complete!"
-echo "🚀 Starting NestJS application..."
-
-# Check if main.js exists
-if [ ! -f "dist/src/main.js" ]; then
-    echo "❌ ERROR: dist/src/main.js not found!"
-    ls -la dist/src/ || echo "dist/src/ directory does not exist"
-    exit 1
-fi
+echo "🚀 Starting NestJS application on PORT: ${PORT:-4201}"
+echo "========================================="
 
 # Start the application
 exec node dist/src/main.js
