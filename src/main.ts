@@ -4,6 +4,10 @@ import { ValidationPipe } from '@nestjs/common';
 import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';
 
 async function bootstrap() {
+  console.log('🚀 INITIALIZING NESTJS APP...'); // Debug log
+  console.log('Environment:', process.env.NODE_ENV);
+  console.log('Port:', process.env.PORT);
+
   const app = await NestFactory.create(AppModule);
 
   // CORS configuration - supports both local and production environments

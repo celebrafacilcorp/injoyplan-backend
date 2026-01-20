@@ -57,10 +57,6 @@ COPY --from=builder /app/dist ./dist
 # Expose the port
 EXPOSE 4201
 
-# Health check
-HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
-  CMD wget --no-verbose --tries=1 --spider http://localhost:4201/health || exit 1
-
-# Start the application (migrations + start in one go)
-# We use npx to ensure we use the local prisma binary
-CMD ["sh", "-c", "npx prisma migrate deploy && node dist/src/main.js"]
+# Start the application
+# Using sh -c to allow command chaining
+CMD ["sh", "-c", "echo 'Starting deployment script...' && npx prisma migrate deploy && echo 'Migrations done, starting node...' && node dist/src/main.js"]
